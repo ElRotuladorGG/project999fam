@@ -19,19 +19,20 @@
 
         let firebaseConfig = null;
 
-        // Intentar detectar si estamos en el entorno de desarrollo o producción
+        // Intentar detectar configuración automática del entorno de simulación
         try {
-            if (typeof __firebase_config !== 'undefined') {
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
                 firebaseConfig = JSON.parse(__firebase_config);
             }
         } catch (e) {
-            console.log("No se detectó configuración automática, usando configuración manual.");
+            console.log("Modo manual activo.");
         }
 
-        /* ⚠️ CUANDO ESTÉS EN GITHUB, BORRA LAS SIGUIENTES LÍNEAS Y PEGA TU CONFIGURACIÓN ASÍ:
-           
-           firebaseConfig = {
-             apiKey: "AIzaSy...",
+        /* ⚠️ INSTRUCCIONES PARA GITHUB PAGES:
+           Borra "let firebaseConfig = null;" y pega tus credenciales reales aquí:
+
+           const firebaseConfig = {
+             apiKey: "TU_API_KEY",
              authDomain: "tu-proyecto.firebaseapp.com",
              projectId: "tu-proyecto",
              storageBucket: "tu-proyecto.appspot.com",
@@ -40,14 +41,20 @@
            };
         */
 
-        const appId = "mi-familia-finanzas"; // Puedes dejar esto así
+        const appId = "mi-familia-finanzas"; 
 
-        // --- VERIFICACIÓN DE SEGURIDAD ---
+        function showScreen(id) {
+            document.getElementById('loading-screen').classList.add('hidden');
+            document.getElementById('setup-error').classList.add('hidden');
+            document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+            const target = document.getElementById(id);
+            if (target) target.classList.remove('hidden');
+        }
+
+        // --- INICIO DE LA APP ---
         if (!firebaseConfig) {
-            window.addEventListener('DOMContentLoaded', () => {
-                document.getElementById('setup-error').classList.remove('hidden');
-                document.getElementById('loading-screen').classList.add('hidden');
-            });
+            // Si no hay configuración, mostramos instrucciones tras un breve delay
+            setTimeout(() => showScreen('setup-error'), 800);
         } else {
             initApp();
         }
@@ -60,11 +67,9 @@
 
                 let transactions = [];
                 let currentType = 'income';
-                let chart = null;
                 let familyPin = null;
-                let isAuthorized = false;
 
-                // Auth
+                // Login anónimo inicial
                 await signInAnonymously(auth);
 
                 onAuthStateChanged(auth, async (user) => {
@@ -73,9 +78,11 @@
                         try {
                             const configSnap = await getDoc(configRef);
                             if (!configSnap.exists()) {
+                                // Es la primera vez que se usa la app: crear PIN
                                 showScreen('setup-screen');
                             } else {
                                 familyPin = configSnap.data().accessPin;
+                                // Verificar si el PIN está guardado en este navegador
                                 if (localStorage.getItem('family_access_token') === familyPin) {
                                     authorize(db, appId);
                                 } else {
@@ -83,18 +90,17 @@
                                 }
                             }
                         } catch (err) {
-                            console.error("Error de permisos:", err);
-                            document.getElementById('db-error').classList.remove('hidden');
-                            document.getElementById('loading-screen').classList.add('hidden');
+                            console.error("Error de Firestore:", err);
+                            showScreen('db-error');
                         }
                     }
                 });
 
-                // Funciones globales vinculadas a los botones
+                // Funciones globales para botones
                 window.setupFamilyPin = async () => {
                     const pin1 = document.getElementById('new-pin').value;
                     const pin2 = document.getElementById('confirm-pin').value;
-                    if (pin1.length < 4 || pin1 !== pin2) return alert("PIN inválido o no coinciden");
+                    if (pin1.length < 4 || pin1 !== pin2) return alert("El PIN debe ser igual en ambos campos y tener al menos 4 números.");
                     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'settings'), { accessPin: pin1 });
                     familyPin = pin1;
                     authorize(db, appId);
@@ -107,8 +113,32 @@
                     } else alert("PIN Incorrecto");
                 };
 
+                window.addTransaction = async (e) => {
+                    e.preventDefault();
+                    try {
+                        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'transactions'), {
+                            member: document.getElementById('member').value,
+                            amount: parseFloat(document.getElementById('amount').value),
+                            type: window.currentType,
+                            category: document.getElementById('category').value,
+                            date: document.getElementById('date').value,
+                            createdAt: new Date().toISOString()
+                        });
+                        e.target.reset();
+                        document.getElementById('date').valueAsDate = new Date();
+                        window.setType('income');
+                    } catch (err) {
+                        alert("Error al guardar. Revisa las reglas de tu base de datos.");
+                    }
+                };
+
+                window.removeTransaction = async (id) => {
+                    if(confirm("¿Seguro que quieres eliminar este registro?")) {
+                        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'transactions', id));
+                    }
+                };
+
                 function authorize(db, appId) {
-                    isAuthorized = true;
                     showScreen('main-app');
                     const transactionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
                     onSnapshot(transactionsRef, (snap) => {
@@ -117,35 +147,10 @@
                         updateUI(transactions);
                     });
                 }
-
-                window.addTransaction = async (e) => {
-                    e.preventDefault();
-                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'transactions'), {
-                        member: document.getElementById('member').value,
-                        amount: parseFloat(document.getElementById('amount').value),
-                        type: currentType,
-                        category: document.getElementById('category').value,
-                        date: document.getElementById('date').value,
-                        createdAt: new Date().toISOString()
-                    });
-                    e.target.reset();
-                    document.getElementById('date').valueAsDate = new Date();
-                };
-
-                window.removeTransaction = async (id) => {
-                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'transactions', id));
-                };
-
             } catch (error) {
-                console.error("Fallo crítico:", error);
+                console.error("Fallo inicialización:", error);
+                showScreen('setup-error');
             }
-        }
-
-        // --- UTILS UI ---
-        function showScreen(id) {
-            document.getElementById('loading-screen').classList.add('hidden');
-            document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
-            document.getElementById(id).classList.remove('hidden');
         }
 
         function updateUI(data) {
@@ -154,12 +159,12 @@
             let tin = 0, tout = 0;
             data.forEach(t => {
                 if(t.type === 'income') tin += t.amount; else tout += t.amount;
-                list.innerHTML += `<tr class="border-b text-sm">
-                    <td class="p-3">${t.date}</td>
-                    <td class="p-3 font-bold">${t.member}</td>
-                    <td class="p-3 text-slate-500">${t.category}</td>
+                list.innerHTML += `<tr class="border-b text-sm hover:bg-slate-50 transition">
+                    <td class="p-3 text-slate-500">${t.date}</td>
+                    <td class="p-3 font-bold text-slate-700">${t.member}</td>
+                    <td class="p-3 text-slate-600">${t.category}</td>
                     <td class="p-3 text-right font-bold ${t.type === 'income' ? 'text-emerald-600' : 'text-rose-600'}">${t.type === 'income' ? '+' : '-'} $${t.amount.toFixed(2)}</td>
-                    <td class="p-3 text-center"><button onclick="removeTransaction('${t.id}')" class="text-rose-400">✕</button></td>
+                    <td class="p-3 text-center"><button onclick="removeTransaction('${t.id}')" class="text-rose-300 hover:text-rose-600">✕</button></td>
                 </tr>`;
             });
             document.getElementById('total-balance').innerText = `$${(tin - tout).toFixed(2)}`;
@@ -174,122 +179,188 @@
             if (window.myChart) window.myChart.destroy();
             window.myChart = new Chart(ctx, {
                 type: 'doughnut',
-                data: { labels: ['Ingresos', 'Egresos'], datasets: [{ data: [tin, tout], backgroundColor: ['#10b981', '#f43f5e'] }] },
-                options: { responsive: true, maintainAspectRatio: false }
+                data: { labels: ['Ingresos', 'Egresos'], datasets: [{ data: [tin, tout], backgroundColor: ['#10b981', '#f43f5e'], borderWeight: 0 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
             });
         }
 
         window.setType = (type) => {
-            currentType = type;
-            document.getElementById('btn-income').className = `p-2 rounded border ${type === 'income' ? 'bg-emerald-500 text-white font-bold' : 'bg-slate-50'}`;
-            document.getElementById('btn-expense').className = `p-2 rounded border ${type === 'expense' ? 'bg-rose-500 text-white font-bold' : 'bg-slate-50'}`;
+            window.currentType = type;
+            document.getElementById('btn-income').className = `p-2 rounded-lg border transition text-sm ${type === 'income' ? 'bg-emerald-500 text-white font-bold border-emerald-500 shadow-md' : 'bg-white text-slate-400 border-slate-200'}`;
+            document.getElementById('btn-expense').className = `p-2 rounded-lg border transition text-sm ${type === 'expense' ? 'bg-rose-500 text-white font-bold border-rose-500 shadow-md' : 'bg-white text-slate-400 border-slate-200'}`;
         };
+        window.currentType = 'income'; 
     </script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
+        .screen { transition: opacity 0.3s ease; }
     </style>
 </head>
-<body class="bg-slate-50 min-h-screen">
+<body class="bg-slate-50 min-h-screen text-slate-900">
+
+    <!-- PANTALLA CARGA -->
+    <div id="loading-screen" class="flex flex-col items-center justify-center min-h-screen">
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+        <p class="text-slate-400 text-sm">Verificando conexión segura...</p>
+    </div>
 
     <!-- ERROR: CONFIGURACIÓN FALTANTE -->
     <div id="setup-error" class="hidden flex flex-col items-center justify-center min-h-screen p-6 text-center">
-        <div class="bg-white p-8 rounded-2xl shadow-xl border-t-4 border-orange-500 max-w-md">
-            <h2 class="text-2xl font-bold text-slate-800 mb-4">⚠️ Falta Configuración</h2>
-            <p class="text-slate-600 mb-6">Para que esto funcione en GitHub, necesitas crear un proyecto en <b>Firebase</b> y pegar tus credenciales en el código del archivo <code>index.html</code>.</p>
-            <ol class="text-left text-sm text-slate-500 space-y-2 mb-6">
-                <li>1. Ve a console.firebase.google.com</li>
-                <li>2. Crea un proyecto y añade una "Web App"</li>
-                <li>3. Copia el objeto <code>firebaseConfig</code></li>
-                <li>4. Reemplaza el bloque en el código</li>
-            </ol>
+        <div class="bg-white p-8 rounded-3xl shadow-2xl border-t-8 border-blue-500 max-w-md">
+            <h2 class="text-2xl font-bold text-slate-800 mb-4">¡Casi listo! 🚀</h2>
+            <p class="text-slate-600 mb-6">Tu página está en línea, pero aún no tiene una base de datos propia conectada.</p>
+            <div class="text-left bg-blue-50 p-5 rounded-2xl text-xs text-blue-800 space-y-3 mb-6 font-medium">
+                <p>1️⃣ Ve a <a href="https://console.firebase.google.com" target="_blank" class="underline font-bold">Firebase Console</a>.</p>
+                <p>2️⃣ Crea un proyecto y añade una <b>Web App</b>.</p>
+                <p>3️⃣ Copia el código de <b>firebaseConfig</b>.</p>
+                <p>4️⃣ Edita este archivo en GitHub y pega tus llaves donde corresponde.</p>
+            </div>
+            <p class="text-[10px] text-slate-400 italic italic">Cuando pegues tus llaves, esta página se convertirá automáticamente en tu gestor financiero familiar.</p>
         </div>
     </div>
 
-    <!-- ERROR: PERMISOS DE BASE DE DATOS -->
+    <!-- ERROR: REGLAS FIRESTORE -->
     <div id="db-error" class="hidden flex flex-col items-center justify-center min-h-screen p-6 text-center">
-        <div class="bg-white p-8 rounded-2xl shadow-xl border-t-4 border-rose-500 max-w-md">
-            <h2 class="text-2xl font-bold text-slate-800 mb-4">🚫 Error de Permisos</h2>
-            <p class="text-slate-600">Tu base de datos Firestore está bloqueada. Debes ir a la pestaña <b>"Rules"</b> en Firebase y permitir lecturas/escrituras.</p>
+        <div class="bg-white p-8 rounded-3xl shadow-2xl border-t-8 border-rose-500 max-w-md">
+            <h2 class="text-2xl font-bold text-slate-800 mb-4">🚫 Error de Acceso</h2>
+            <p class="text-slate-600 mb-4">La base de datos está bloqueada por Google.</p>
+            <p class="text-sm text-slate-500 leading-relaxed">Debes ir a Firebase -> Firestore Database -> pestaña <b>Rules</b> y cambiar las reglas para permitir lectura/escritura.</p>
         </div>
     </div>
 
-    <!-- PANTALLA CARGA -->
-    <div id="loading-screen" class="flex items-center justify-center min-h-screen">
-        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-    </div>
-
-    <!-- PANTALLA: SETUP PIN -->
+    <!-- PANTALLA: CONFIGURACIÓN PIN -->
     <div id="setup-screen" class="screen hidden flex items-center justify-center min-h-screen p-4">
-        <div class="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md">
-            <h2 class="text-xl font-bold mb-4">Seguridad Familiar</h2>
-            <p class="text-sm text-slate-500 mb-6">Define el PIN para que solo tu familia pueda entrar.</p>
-            <input type="password" id="new-pin" placeholder="PIN (4+ dígitos)" class="w-full p-3 border rounded-lg mb-4 text-center text-xl">
-            <input type="password" id="confirm-pin" placeholder="Confirmar PIN" class="w-full p-3 border rounded-lg mb-6 text-center text-xl">
-            <button onclick="setupFamilyPin()" class="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">Crear PIN</button>
+        <div class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-md border border-slate-100">
+            <h2 class="text-2xl font-bold mb-2">Seguridad Familiar</h2>
+            <p class="text-sm text-slate-500 mb-8">Protege tus datos financieros con un PIN de acceso.</p>
+            <div class="space-y-4">
+                <input type="password" id="new-pin" placeholder="PIN de 4 números" class="w-full p-4 border border-slate-200 rounded-2xl text-center text-2xl tracking-widest focus:ring-2 focus:ring-blue-500 outline-none">
+                <input type="password" id="confirm-pin" placeholder="Repite el PIN" class="w-full p-4 border border-slate-200 rounded-2xl text-center text-2xl tracking-widest focus:ring-2 focus:ring-blue-500 outline-none">
+                <button onclick="setupFamilyPin()" class="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold hover:bg-blue-700 transition shadow-lg shadow-blue-200">Crear Acceso Seguro</button>
+            </div>
         </div>
     </div>
 
     <!-- PANTALLA: LOGIN -->
     <div id="login-screen" class="screen hidden flex items-center justify-center min-h-screen p-4">
-        <div class="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
-            <h2 class="text-xl font-bold mb-6">Acceso Protegido</h2>
-            <input type="password" id="login-pin" placeholder="PIN de acceso" class="w-full p-3 border rounded-lg mb-6 text-center text-2xl tracking-widest">
-            <button onclick="loginWithPin()" class="w-full bg-slate-800 text-white py-3 rounded-xl font-bold">Entrar</button>
+        <div class="bg-white p-10 rounded-3xl shadow-2xl w-full max-w-sm text-center border border-slate-100">
+            <div class="w-20 h-20 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+            </div>
+            <h2 class="text-2xl font-bold mb-8 text-slate-800">Introducir PIN</h2>
+            <input type="password" id="login-pin" placeholder="••••" class="w-full p-4 border border-slate-200 rounded-2xl text-center text-3xl tracking-[0.5em] mb-8 focus:ring-2 focus:ring-blue-500 outline-none">
+            <button onclick="loginWithPin()" class="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold hover:bg-black transition shadow-xl">Entrar al Gestor</button>
         </div>
     </div>
 
-    <!-- PANTALLA: APP -->
+    <!-- PANTALLA: APLICACIÓN PRINCIPAL -->
     <div id="main-app" class="screen hidden p-4 md:p-8 max-w-6xl mx-auto">
-        <div class="flex justify-between items-end mb-8">
-            <h1 class="text-2xl font-bold">Control de Gastos Familiares</h1>
-            <button onclick="localStorage.clear(); location.reload()" class="text-xs text-slate-400 underline">Cerrar Sesión</button>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-            <div class="bg-white p-4 rounded-xl shadow-sm border">
-                <p class="text-xs text-slate-400 uppercase font-bold">Balance</p>
-                <h2 id="total-balance" class="text-2xl font-bold text-slate-800">$0.00</h2>
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4">
+            <div>
+                <h1 class="text-3xl font-extrabold text-slate-800 tracking-tight">Finanzas Familiares</h1>
+                <p class="text-xs text-slate-400 font-semibold uppercase tracking-wider">Sincronización en tiempo real</p>
             </div>
-            <div class="bg-emerald-50 p-4 rounded-xl shadow-sm border border-emerald-100 text-emerald-700">
-                <p class="text-xs uppercase font-bold">Ingresos</p>
-                <h2 id="total-income" class="text-2xl font-bold">$0.00</h2>
-            </div>
-            <div class="bg-rose-50 p-4 rounded-xl shadow-sm border border-rose-100 text-rose-700">
-                <p class="text-xs uppercase font-bold">Egresos</p>
-                <h2 id="total-expense" class="text-2xl font-bold">$0.00</h2>
+            <div class="flex gap-4 items-center">
+                <button onclick="localStorage.clear(); location.reload()" class="text-xs font-bold text-slate-400 hover:text-rose-500 transition uppercase">Cerrar Sesión</button>
             </div>
         </div>
 
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div class="space-y-6">
-                <form onsubmit="addTransaction(event)" id="transaction-form" class="bg-white p-6 rounded-xl shadow-md space-y-4">
-                    <select id="member" class="w-full p-2 border rounded" required>
-                        <option value="Yo">Yo</option><option value="Papá">Papá</option><option value="Mamá">Mamá</option><option value="Hermano/a">Hermano/a</option>
-                    </select>
-                    <input type="number" id="amount" step="0.01" placeholder="Monto $" class="w-full p-2 border rounded" required>
-                    <div class="grid grid-cols-2 gap-2">
-                        <button type="button" onclick="setType('income')" id="btn-income" class="p-2 rounded border bg-emerald-500 text-white font-bold">Ingreso</button>
-                        <button type="button" onclick="setType('expense')" id="btn-expense" class="p-2 rounded border bg-slate-50">Egreso</button>
+        <!-- Tarjetas de Resumen -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+            <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
+                <p class="text-[10px] text-slate-400 uppercase font-bold mb-2">Balance Disponible</p>
+                <h2 id="total-balance" class="text-3xl font-bold text-slate-800">$0.00</h2>
+            </div>
+            <div class="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 text-emerald-700">
+                <p class="text-[10px] uppercase font-bold mb-2">Total Ingresos</p>
+                <h2 id="total-income" class="text-3xl font-bold">$0.00</h2>
+            </div>
+            <div class="bg-rose-50 p-6 rounded-3xl border border-rose-100 text-rose-700">
+                <p class="text-[10px] uppercase font-bold mb-2">Total Egresos</p>
+                <h2 id="total-expense" class="text-3xl font-bold">$0.00</h2>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-10">
+            <!-- Columna Izquierda: Formulario -->
+            <div class="space-y-8">
+                <form onsubmit="addTransaction(event)" id="transaction-form" class="bg-white p-8 rounded-3xl shadow-xl space-y-5 border border-slate-100">
+                    <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-2">Nuevo Registro</h3>
+                    
+                    <div class="space-y-1">
+                        <label class="text-[10px] font-bold text-slate-400 ml-1">RESPONSABLE</label>
+                        <select id="member" class="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 text-sm outline-none" required>
+                            <option value="Yo">Yo</option>
+                            <option value="Papá">Papá</option>
+                            <option value="Mamá">Mamá</option>
+                            <option value="Hermano/a">Hermano/a</option>
+                            <option value="Ahorro Familiar">Ahorro Familiar</option>
+                        </select>
                     </div>
-                    <input type="text" id="category" placeholder="Categoría" class="w-full p-2 border rounded" required>
-                    <input type="date" id="date" class="w-full p-2 border rounded" required>
-                    <button type="submit" class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold">Guardar</button>
+
+                    <div class="space-y-1">
+                        <label class="text-[10px] font-bold text-slate-400 ml-1">MONTO</label>
+                        <input type="number" id="amount" step="0.01" placeholder="0.00" class="w-full p-3 border border-slate-200 rounded-xl text-lg font-bold outline-none" required>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <button type="button" onclick="setType('income')" id="btn-income" class="p-3 rounded-xl border bg-emerald-500 text-white font-bold text-sm shadow-lg shadow-emerald-100">Ingreso</button>
+                        <button type="button" onclick="setType('expense')" id="btn-expense" class="p-3 rounded-xl border bg-white text-slate-400 text-sm">Egreso</button>
+                    </div>
+
+                    <div class="space-y-1">
+                        <label class="text-[10px] font-bold text-slate-400 ml-1">CATEGORÍA</label>
+                        <input type="text" id="category" placeholder="Ej: Supermercado, Regalo" class="w-full p-3 border border-slate-200 rounded-xl text-sm outline-none" required>
+                    </div>
+
+                    <div class="space-y-1">
+                        <label class="text-[10px] font-bold text-slate-400 ml-1">FECHA</label>
+                        <input type="date" id="date" class="w-full p-3 border border-slate-200 rounded-xl text-sm outline-none" required>
+                    </div>
+
+                    <button type="submit" class="w-full bg-blue-600 text-white py-4 rounded-2xl font-bold hover:bg-blue-700 transition shadow-xl shadow-blue-100">Guardar Movimiento</button>
                 </form>
-                <div class="bg-white p-4 rounded-xl shadow-md h-48"><canvas id="categoryChart"></canvas></div>
+
+                <div class="bg-white p-6 rounded-3xl shadow-md border border-slate-100 flex flex-col items-center justify-center">
+                    <p class="text-[10px] font-bold text-slate-400 uppercase mb-4">Distribución Visual</p>
+                    <div class="w-full h-48">
+                        <canvas id="categoryChart"></canvas>
+                    </div>
+                </div>
             </div>
 
+            <!-- Columna Derecha: Tabla -->
             <div class="lg:col-span-2">
-                <div class="bg-white rounded-xl shadow-md overflow-hidden">
-                    <div class="p-4 border-b flex justify-between bg-slate-50"><span class="font-bold">Historial</span><span id="record-count" class="text-xs">...</span></div>
-                    <div class="max-h-96 overflow-y-auto">
+                <div class="bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-100">
+                    <div class="p-6 border-b flex justify-between bg-slate-50 items-center">
+                        <span class="font-bold text-slate-700">Últimos Movimientos</span>
+                        <span id="record-count" class="text-[10px] bg-blue-600 px-3 py-1 rounded-full font-bold text-white uppercase tracking-tighter">...</span>
+                    </div>
+                    <div class="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table class="w-full text-left">
-                            <tbody id="transaction-list"></tbody>
+                            <thead class="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase sticky top-0">
+                                <tr>
+                                    <th class="p-4">Fecha</th>
+                                    <th class="p-4">Persona</th>
+                                    <th class="p-4">Concepto</th>
+                                    <th class="p-4 text-right">Monto</th>
+                                    <th class="p-4"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="transaction-list" class="divide-y divide-slate-100">
+                                <!-- Datos dinámicos -->
+                            </tbody>
                         </table>
                     </div>
                 </div>
             </div>
         </div>
     </div>
+
+    <script>
+        // Inicializar fecha de hoy por defecto
+        document.getElementById('date').valueAsDate = new Date();
+    </script>
 </body>
 </html>
