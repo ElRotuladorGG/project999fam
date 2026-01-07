@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestor Financiero Familiar</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        let transactions = [];
+        let currentType = 'income';
+        let chart = null;
+        let currentUser = null;
+        let familyPin = null;
+        let isAuthorized = false;
+
+        // --- SEGURIDAD Y ACCESO ---
+        async function checkAccess() {
+            const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'settings');
+            const configSnap = await getDoc(configRef);
+
+            if (!configSnap.exists()) {
+                // Primer uso: Mostrar pantalla de creación de PIN
+                showScreen('setup-screen');
+            } else {
+                familyPin = configSnap.data().accessPin;
+                // Verificar si ya hay un PIN guardado localmente
+                const savedPin = localStorage.getItem('family_access_token');
+                if (savedPin === familyPin) {
+                    authorize();
+                } else {
+                    showScreen('login-screen');
+                }
+            }
+        }
+
+        window.setupFamilyPin = async () => {
+            const pin1 = document.getElementById('new-pin').value;
+            const pin2 = document.getElementById('confirm-pin').value;
+            
+            if (pin1.length < 4) return showMessage("El PIN debe tener al menos 4 dígitos", "error");
+            if (pin1 !== pin2) return showMessage("Los PINs no coinciden", "error");
+
+            const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'settings');
+            await setDoc(configRef, { accessPin: pin1 });
+            familyPin = pin1;
+            authorize();
+        };
+
+        window.loginWithPin = () => {
+            const entered = document.getElementById('login-pin').value;
+            if (entered === familyPin) {
+                localStorage.setItem('family_access_token', entered);
+                authorize();
+            } else {
+                showMessage("PIN incorrecto", "error");
+            }
+        };
+
+        function authorize() {
+            isAuthorized = true;
+            showScreen('main-app');
+            setupRealtimeListener();
+        }
+
+        function showScreen(id) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+            document.getElementById(id).classList.remove('hidden');
+        }
+
+        function showMessage(text, type) {
+            const msgBox = document.getElementById('message-box');
+            msgBox.innerText = text;
+            msgBox.className = `p-3 rounded-md text-center mb-4 ${type === 'error' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`;
+            msgBox.classList.remove('hidden');
+            setTimeout(() => msgBox.classList.add('hidden'), 3000);
+        }
+
+        // --- AUTENTICACIÓN FIREBASE ---
+        async function initAuth() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) { console.error(error); }
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                checkAccess();
+            }
+        });
+
+        // --- LÓGICA DE DATOS ---
+        function setupRealtimeListener() {
+            const transactionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
+            onSnapshot(transactionsRef, (snapshot) => {
+                transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+                updateUI();
+            });
+        }
+
+        window.addTransaction = async (data) => {
+            if (!isAuthorized) return;
+            const transactionsRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
+            await addDoc(transactionsRef, data);
+        };
+
+        window.removeTransaction = async (id) => {
+            if (!isAuthorized) return;
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'transactions', id);
+            await deleteDoc(docRef);
+        };
+
+        function updateUI() {
+            const list = document.getElementById('transaction-list');
+            list.innerHTML = '';
+            let totalIn = 0, totalOut = 0;
+
+            transactions.forEach(t => {
+                const row = document.createElement('tr');
+                row.className = "hover:bg-slate-50 transition border-b border-slate-100";
+                const amountClass = t.type === 'income' ? 'text-emerald-600' : 'text-rose-600';
+                if (t.type === 'income') totalIn += t.amount; else totalOut += t.amount;
+
+                row.innerHTML = `
+                    <td class="px-4 py-3 text-sm text-slate-600">${t.date}</td>
+                    <td class="px-4 py-3 text-sm font-medium">${t.member}</td>
+                    <td class="px-4 py-3 text-sm text-slate-500">${t.category}</td>
+                    <td class="px-4 py-3 text-sm text-right font-bold ${amountClass}">${t.type === 'income' ? '+' : '-'} $${t.amount.toFixed(2)}</td>
+                    <td class="px-4 py-3 text-center">
+                        <button onclick="window.removeTransaction('${t.id}')" class="text-slate-300 hover:text-rose-500"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>
+                    </td>`;
+                list.appendChild(row);
+            });
+
+            document.getElementById('total-balance').innerText = `$${(totalIn - totalOut).toFixed(2)}`;
+            document.getElementById('total-income').innerText = `$${totalIn.toFixed(2)}`;
+            document.getElementById('total-expense').innerText = `$${totalOut.toFixed(2)}`;
+            document.getElementById('record-count').innerText = `${transactions.length} registros`;
+            updateChart(totalIn, totalOut);
+        }
+
+        function updateChart(tin, tout) {
+            const ctx = document.getElementById('categoryChart').getContext('2d');
+            if (chart) chart.destroy();
+            chart = new Chart(ctx, {
+                type: 'doughnut',
+                data: { labels: ['Ingresos', 'Egresos'], datasets: [{ data: [tin, tout], backgroundColor: ['#10b981', '#f43f5e'] }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+            });
+        }
+
+        window.setType = (type) => {
+            currentType = type;
+            document.getElementById('btn-income').className = `py-2 rounded-md border text-center transition ${type === 'income' ? 'bg-emerald-50 text-emerald-700 border-emerald-200 font-bold' : 'bg-slate-50 text-slate-500 border-slate-200'}`;
+            document.getElementById('btn-expense').className = `py-2 rounded-md border text-center transition ${type === 'expense' ? 'bg-rose-50 text-rose-700 border-rose-200 font-bold' : 'bg-slate-50 text-slate-500 border-slate-200'}`;
+        };
+
+        window.onload = () => {
+            initAuth();
+            document.getElementById('date').valueAsDate = new Date();
+            document.getElementById('transaction-form').addEventListener('submit', (e) => {
+                e.preventDefault();
+                window.addTransaction({
+                    member: document.getElementById('member').value,
+                    amount: parseFloat(document.getElementById('amount').value),
+                    type: currentType,
+                    category: document.getElementById('category').value,
+                    date: document.getElementById('date').value,
+                    createdAt: new Date().toISOString()
+                });
+                e.target.reset();
+                document.getElementById('date').valueAsDate = new Date();
+                window.setType('income');
+            });
+        };
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen flex flex-col">
+
+    <!-- Mensajes Globales -->
+    <div id="message-box" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 hidden shadow-lg min-w-[300px]"></div>
+
+    <!-- PANTALLA: CONFIGURACIÓN INICIAL -->
+    <div id="setup-screen" class="screen hidden flex-1 flex items-center justify-center p-4">
+        <div class="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full border border-slate-200">
+            <h2 class="text-2xl font-bold text-slate-800 mb-2">Bienvenido</h2>
+            <p class="text-slate-500 mb-6">Crea un PIN de acceso para proteger las finanzas de tu familia.</p>
+            <div class="space-y-4">
+                <input type="password" id="new-pin" placeholder="Nuevo PIN (ej: 1234)" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-center text-xl tracking-widest">
+                <input type="password" id="confirm-pin" placeholder="Confirmar PIN" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-center text-xl tracking-widest">
+                <button onclick="setupFamilyPin()" class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition">Establecer PIN Familiar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- PANTALLA: LOGIN -->
+    <div id="login-screen" class="screen hidden flex-1 flex items-center justify-center p-4">
+        <div class="bg-white p-8 rounded-2xl shadow-xl max-w-sm w-full border border-slate-200 text-center">
+            <div class="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+            </div>
+            <h2 class="text-2xl font-bold text-slate-800 mb-6">Acceso Protegido</h2>
+            <input type="password" id="login-pin" placeholder="Introduce el PIN" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-center text-2xl tracking-[1em] mb-4">
+            <button onclick="loginWithPin()" class="w-full bg-slate-800 text-white font-bold py-3 rounded-lg hover:bg-slate-900 transition">Entrar</button>
+        </div>
+    </div>
+
+    <!-- PANTALLA: APLICACIÓN PRINCIPAL -->
+    <div id="main-app" class="screen hidden p-4 md:p-8 max-w-6xl mx-auto w-full">
+        <header class="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+                <h1 class="text-3xl font-bold text-slate-800 flex items-center gap-2">
+                    Finanzas Familiares
+                    <span class="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full uppercase tracking-wider">Protegido</span>
+                </h1>
+                <p class="text-slate-500">Control colaborativo y seguro</p>
+            </div>
+            <button onclick="localStorage.removeItem('family_access_token'); location.reload();" class="text-sm text-slate-400 hover:text-slate-600">Cerrar Sesión</button>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                <p class="text-sm font-medium text-slate-500 mb-1">Balance</p>
+                <h2 id="total-balance" class="text-3xl font-bold text-slate-900">$0.00</h2>
+            </div>
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 border-l-4 border-l-emerald-500">
+                <p class="text-sm font-medium text-emerald-600 mb-1">Ingresos</p>
+                <h2 id="total-income" class="text-3xl font-bold text-emerald-600">$0.00</h2>
+            </div>
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 border-l-4 border-l-rose-500">
+                <p class="text-sm font-medium text-rose-600 mb-1">Egresos</p>
+                <h2 id="total-expense" class="text-3xl font-bold text-rose-600">$0.00</h2>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div class="space-y-6">
+                <div class="bg-white p-6 rounded-xl shadow-md border border-slate-100">
+                    <h3 class="font-bold text-slate-800 mb-4">Nueva Transacción</h3>
+                    <form id="transaction-form" class="space-y-4">
+                        <select id="member" class="w-full p-2 bg-slate-50 border rounded-md" required>
+                            <option value="Yo">Yo</option><option value="Papá">Papá</option><option value="Mamá">Mamá</option><option value="Hermano/a">Hermano/a</option>
+                        </select>
+                        <input type="number" id="amount" step="0.01" placeholder="Monto $" class="w-full p-2 bg-slate-50 border rounded-md" required>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button type="button" onclick="setType('income')" id="btn-income" class="py-2 rounded-md border text-center transition bg-emerald-50 text-emerald-700 border-emerald-200 font-bold">Ingreso</button>
+                            <button type="button" onclick="setType('expense')" id="btn-expense" class="py-2 rounded-md border text-center transition bg-slate-50 text-slate-500 border-slate-200">Egreso</button>
+                        </div>
+                        <input type="text" id="category" placeholder="Categoría" class="w-full p-2 bg-slate-50 border rounded-md" required>
+                        <input type="date" id="date" class="w-full p-2 bg-slate-50 border rounded-md" required>
+                        <button type="submit" class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition">Guardar</button>
+                    </form>
+                </div>
+                <div class="bg-white p-4 rounded-xl shadow-md border border-slate-100 h-64">
+                    <canvas id="categoryChart"></canvas>
+                </div>
+            </div>
+
+            <div class="lg:col-span-2">
+                <div class="bg-white rounded-xl shadow-md border border-slate-100 overflow-hidden">
+                    <div class="p-4 bg-slate-50 border-b flex justify-between items-center">
+                        <h3 class="font-bold text-slate-800">Movimientos</h3>
+                        <span id="record-count" class="text-xs font-semibold bg-slate-200 text-slate-600 px-2 py-1 rounded-full">...</span>
+                    </div>
+                    <div class="overflow-x-auto max-h-[500px] overflow-y-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead class="bg-slate-50 sticky top-0">
+                                <tr>
+                                    <th class="p-4 text-xs font-bold text-slate-400 uppercase">Fecha</th>
+                                    <th class="p-4 text-xs font-bold text-slate-400 uppercase">Quién</th>
+                                    <th class="p-4 text-xs font-bold text-slate-400 uppercase">Qué</th>
+                                    <th class="p-4 text-xs font-bold text-slate-400 uppercase text-right">Monto</th>
+                                    <th class="p-4"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="transaction-list"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
